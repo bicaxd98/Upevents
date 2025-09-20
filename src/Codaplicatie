@@ -1,0 +1,64 @@
+name: Build UPEvents360 (Windows .NET7) & Inno Setup
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-and-package:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 7
+        uses: actions/setup-dotnet@v3
+        with:
+          dotnet-version: '7.0.x'
+
+      - name: Install Chocolatey
+        run: |
+          Set-ExecutionPolicy Bypass -Scope Process -Force
+          iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y
+
+      - name: Ensure ffmpeg is present (download if not)
+        run: |
+          mkdir -Force publish-temp
+          $ff = "$PWD\\tools\\ffmpeg\\ffmpeg.exe"
+          if (Test-Path $ff) {
+            Copy-Item $ff publish-temp/
+          } else {
+            Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile "ffmpeg.zip"
+            Expand-Archive ffmpeg.zip -DestinationPath ffzip
+            $found = Get-ChildItem -Path ffzip -Filter ffmpeg.exe -Recurse | Select-Object -First 1
+            if ($found) { Copy-Item $found.FullName publish-temp/ }
+          }
+
+      - name: dotnet publish (Release, win-x64 self-contained)
+        run: dotnet publish ./src/Gopro360App.csproj -c Release -r win-x64 --self-contained true -o publish
+
+      - name: Copy ffmpeg into publish
+        run: Copy-Item -Path publish-temp\\ffmpeg.exe -Destination publish\\ -Force
+
+      - name: Run Inno Setup to create installer
+        run: |
+          $issPath = ".\\packaging\\innosetup_with_ffmpeg.iss"
+          $issContent = Get-Content $issPath -Raw
+          $issContent = $issContent -replace 'Source: "path\\\\to\\\\publish\\\\Gopro360App.exe"', "Source: `"$PWD\\publish\\Gopro360App.exe`""
+          $tempIss = "$PWD\\publish\\tmp_inno.iss"
+          $issContent | Set-Content $tempIss
+          & "C:\\Program Files (x86)\\Inno Setup 6\\ISCC.exe" $tempIss
+        shell: powershell
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: UPEvents360_Installer
+          path: |
+            publish\\*.exe
+            Output\\*.exe
+            *.exe
